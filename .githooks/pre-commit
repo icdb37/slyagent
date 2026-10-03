@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  Pre-commit hook: 校验提交代码中是否包含敏感数据
+# =============================================================================
+#  检测范围: API Key、Secret、Password、Token、Private Key、数据库连接串等
+#
+#  使用方法:
+#    - 自动在 `git commit` 时执行
+#    - 跳过本次检查: git commit --no-verify
+#    - 自定义检测规则: 编辑本文件中的 RULES 数组
+#    - 跳过整个项目: 编辑本文件中的 SKIP_FILES 数组
+# =============================================================================
+
+set -euo pipefail
+
+# ---------- 颜色输出 (兼容 Windows Git Bash) ----------
+if command -v tput >/dev/null 2>&1 && [ -t 1 ]; then
+    C_RED=$(tput setaf 1)
+    C_YELLOW=$(tput setaf 3)
+    C_GREEN=$(tput setaf 2)
+    C_BOLD=$(tput bold)
+    C_RST=$(tput sgr0)
+else
+    C_RED='' C_YELLOW='' C_GREEN='' C_BOLD='' C_RST=''
+fi
+
+log_info() { printf '%s\n' "${C_YELLOW}[敏感数据检测]${C_RST} $1"; }
+log_ok()   { printf '%s\n' "${C_GREEN}[敏感数据检测]${C_RST} $1"; }
+log_err()  { printf '%s\n' "${C_RED}[敏感数据检测]${C_RST} $1" >&2; }
+
+# ---------- 获取暂存区文件 (排除删除) ----------
+log_info "正在扫描暂存文件..."
+mapfile -t STAGED_FILES < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+
+if [ ${#STAGED_FILES[@]} -eq 0 ]; then
+    log_ok "暂存区为空,跳过检测"
+    exit 0
+fi
+
+# ---------- 检测规则 ----------
+# 格式: "规则名称|grep -E 正则"
+# 使用单引号,避免 bash 对反引号/双引号做特殊处理
+# 字符类内需要的引号用 [:q:] [:bq:] [:bs:] 替代,在执行前还原
+RULES=(
+    'AWS Access Key ID|AKIA[0-9A-Z]{16}'
+    'AWS Secret Access Key|(aws[_-]?secret[_-]?(access[_-]?)?key)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=]{40}'
+    'GitHub Token|gh[pousr]_[A-Za-z0-9]{36,255}'
+    'GitLab Token|glpat-[A-Za-z0-9_-]{20,}'
+    'Generic API Key|([Aa]pi[_-]?[Kk]ey|[Aa]ccess[_-]?[Kk]ey)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{16,}'
+    'Client Secret|([Cc]lient[_-]?[Ss]ecret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{16,}'
+    'Password Assignment|([Pp]assword|[Pp]asswd|[Pp]wd)[[:space:]]*[:=][[:space:]]*[^[:space:]]{6,}'
+    'Auth/Access/Bearer Token|([Aa]uth[_-]?[Tt]oken|[Aa]ccess[_-]?[Tt]oken|[Bb]earer[_-]?[Tt]oken|[Rr]efresh[_-]?[Tt]oken)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_.-]{16,}'
+    'Private Key|-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY( BLOCK)?-----'
+    'DB URL with Password|(mysql|postgres|postgresql|mongodb|redis)://[^:]+:[^@[:space:]]+@'
+    'JWT|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+    'Slack Token|xox[baprs]-[A-Za-z0-9-]{10,}'
+    'Long Random Secret|([Ss]ecret|[Tt]oken|[Kk]ey|[Cc]redential)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_/+=]{32,}'
+    # ---------- LLM 厂商 API Key (针对常见前缀) ----------
+    'OpenAI / Anthropic / OpenRouter|sk-(proj-|svcacct-|ant-|ant-api03-|or-|or-v1-|)[A-Za-z0-9_\-]{20,}'
+    'Google API Key (Gemini 等)|AIza[0-9A-Za-z_\-]{35}'
+    'HuggingFace Token|hf_[A-Za-z0-9]{20,}'
+    'Replicate Token|r8_[A-Za-z0-9]{20,}'
+    'xAI (Grok) Key|xai-[A-Za-z0-9]{20,}'
+    'Anthropic Setup-Token|sk-ant-setup-[A-Za-z0-9_\-]{20,}'
+)
+
+# ---------- 占位符/明显非真实凭据(命中则忽略) ----------
+# 注意单引号字符串内不可包含单引号,这里使用 sed 在还原时把 [:qS] 替换为 '
+PLACEHOLDER_PATTERN='your_|my_|example|placeholder|xxxx|test[_-]|dummy|sample|demo|<[^>]+>|\{\{[^}]+\}\}|\$\{[^}]+\}|CHANGE_?ME|REPLACE_?ME|TODO|FIXME'
+
+# ---------- 完全跳过检测的文件 (相对项目根的 glob 模式) ----------
+SKIP_FILES=(
+    "*.md"
+    "*.txt"
+    "*.lock"
+    "go.sum"
+)
+
+# ---------- 工具函数 ----------
+should_skip_file() {
+    local f="$1"
+    for pat in "${SKIP_FILES[@]}"; do
+        # shellcheck disable=SC2053
+        [[ "$f" == $pat ]] && return 0
+    done
+    return 1
+}
+
+is_text_file() {
+    local f="$1"
+    # 已知二进制扩展名
+    case "$f" in
+        *.png|*.jpg|*.jpeg|*.gif|*.bmp|*.ico|*.webp|*.pdf|\
+        *.zip|*.tar|*.gz|*.bz2|*.7z|*.rar|*.exe|*.dll|*.so|*.dylib|*.bin|\
+        *.woff|*.woff2|*.ttf|*.eot|*.otf|*.mp3|*.mp4|*.avi|*.mov|*.webm|\
+        *.class|*.jar|*.pyc|*.o|*.a)
+            return 1
+            ;;
+    esac
+    # 用 grep -I 检测(包含 NULL 字节视为二进制)
+    if grep -qI . "$f" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# ---------- 扫描 ----------
+VIOLATIONS=0
+REPORT_FILES=()
+REPORT_TEXTS=()
+
+for FILE in "${STAGED_FILES[@]}"; do
+    [ -f "$FILE" ] || continue
+    should_skip_file "$FILE" && continue
+    is_text_file "$FILE" || continue
+
+    # 从暂存区读取内容 (而非工作区)
+    CONTENT=$(git show ":$FILE" 2>/dev/null) || continue
+
+    FILE_REPORT=""
+
+    for RULE in "${RULES[@]}"; do
+        NAME="${RULE%%|*}"
+        PATTERN="${RULE#*|}"
+
+        MATCHES=$(printf '%s\n' "$CONTENT" | grep -inE "$PATTERN" 2>/dev/null || true)
+        [ -z "$MATCHES" ] && continue
+
+        while IFS= read -r MATCH; do
+            [ -z "$MATCH" ] && continue
+            # 注意:不能用 LINENO,这是 bash 内置行号变量
+            LINE_NUM="${MATCH%%:*}"
+            LINE=$(printf '%s' "$MATCH" | cut -d: -f2-)
+
+            # 命中占位符 → 跳过
+            if printf '%s' "$LINE" | grep -iqE "$PLACEHOLDER_PATTERN" 2>/dev/null; then
+                continue
+            fi
+
+            # 脱敏显示: 仅保留前 4 与后 4 个字符
+            REDACTED=$(printf '%s' "$LINE" | sed -E 's/(.{4}).{2,}(.{4})/\1****\2/g' 2>/dev/null || printf '%s' "$LINE")
+            FILE_REPORT+="${C_RED}[$NAME]${C_RST} ${FILE}:${LINE_NUM}  ${REDACTED}"$'\n'
+            VIOLATIONS=$((VIOLATIONS + 1))
+        done <<< "$MATCHES"
+    done
+
+    if [ -n "$FILE_REPORT" ]; then
+        REPORT_FILES+=("$FILE")
+        REPORT_TEXTS+=("$FILE_REPORT")
+    fi
+done
+
+# ---------- 输出结果 ----------
+if [ "$VIOLATIONS" -gt 0 ]; then
+    echo ""
+    printf '%s%s=======================================================%s\n' "$C_RED" "$C_BOLD" "$C_RST"
+    printf '%s%s  检测到 %d 处可能的敏感数据,提交被阻止  %s\n' "$C_RED" "$C_BOLD" "$VIOLATIONS" "$C_RST"
+    printf '%s%s=======================================================%s\n' "$C_RED" "$C_BOLD" "$C_RST"
+    echo ""
+
+    for i in "${!REPORT_FILES[@]}"; do
+        printf '%s%s文件: %s%s\n' "$C_YELLOW" "$C_BOLD" "${REPORT_FILES[$i]}" "$C_RST"
+        printf '%s\n' "${REPORT_TEXTS[$i]}"
+    done
+
+    echo ""
+    echo "可能命中的类型: API Key, Secret, Password, Token, Private Key, 数据库连接串等"
+    echo ""
+    echo "处理建议:"
+    echo "  1. 将密钥移至环境变量或 .env 文件(.env 系列已在 .gitignore)"
+    echo "  2. 使用配置中心或密钥管理服务"
+    echo "  3. 若是误报/测试数据,执行:  git commit --no-verify"
+    echo ""
+    exit 1
+fi
+
+log_ok "扫描通过,未发现敏感数据 ✓"
+exit 0
