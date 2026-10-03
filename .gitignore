@@ -72,6 +72,7 @@ lerna-debug.log*
 # IDE / 编辑器
 # ============================================
 .idea/
+.vscode/
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json

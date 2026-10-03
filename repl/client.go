@@ -78,13 +78,16 @@ func (c *Client) ChatIncr(msg string, w io.Writer) error {
 	}
 	hreq := c.hc.NewRequest()
 	hreq.SetBody(param).
-		SetAuthToken(c.cfg.APIKey)
+		SetAuthToken(c.cfg.APIKey).
+		SetDoNotParseResponse(true)
 	hres, err := hreq.Post(c.cfg.BaseURL)
 	if err != nil {
 		return err
 	}
 	if !hres.IsSuccess() {
-		return errors.New(hres.String())
+		body, _ := io.ReadAll(hres.RawResponse.Body)
+		hres.RawResponse.Body.Close()
+		return errors.New(string(body))
 	}
 	var res *ResXllm
 	defer hres.RawResponse.Body.Close()
@@ -131,22 +134,23 @@ func (c *Client) ChatIncr(msg string, w io.Writer) error {
 				rcs = append(rcs, rc)
 			case "content_block_stop":
 			case "content_block_delta": // thinking 或者 text
-				evtVal := &ResContentBlock{}
+				evtVal := &ResContentDelta{}
 				if err := json.Unmarshal(evtData, evtVal); err != nil {
 					return err
 				}
-				switch evtVal.ContentBlock.Type {
-				case ResContentTypeThinkingDelta: // 增量思考
-					rc.Thinking += evtVal.ContentBlock.Thinking
-				case ResContentTypeTextDelta: // 增量文本
-					rc.Text += evtVal.ContentBlock.Text
-					w.Write([]byte(evtVal.ContentBlock.Text))
-				case ResContentTypeSignatureDelta: // 增量前面
-					rc.Signature = evtVal.ContentBlock.Signature
+				switch evtVal.Delta.Type {
+				case ResContentDeltaTypeThinking: // 增量思考
+					rc.Thinking += evtVal.Delta.Thinking
+				case ResContentDeltaTypeText: // 增量文本
+					rc.Text += evtVal.Delta.Text
+					w.Write([]byte(evtVal.Delta.Text))
+				case ResContentDeltaTypeSignature: // 增量前面
+					rc.Signature = evtVal.Delta.Signature
 				}
 			}
 		}
 	}
+	res.Content = rcs
 	c.history = append(c.history, &Message{Role: RoleAssistant, Content: res.Content})
 	return nil
 }
@@ -237,7 +241,7 @@ func (c *Client) doqa_incr(ch chan error) {
 			err = c.ChatIncr(string(cmd), print)
 			if err != nil {
 				print.ResetColor(outp.ColorRed)
-				print.Write([]byte(fmt.Sprint(err)))
+				print.Write([]byte(err.Error()))
 				print.Close()
 				return
 			}

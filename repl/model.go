@@ -14,13 +14,18 @@ const (
 type ResContentType string
 
 const (
-	ResContentTypeText           ResContentType = "text"
-	ResContentTypeTextDelta      ResContentType = "text_delta"
-	ResContentTypeSignatureDelta ResContentType = "signature_delta"
-	ResContentTypeThinking       ResContentType = "thinking"
-	ResContentTypeThinkingDelta  ResContentType = "thinking_delta"
-	ResContentTypeToolUse        ResContentType = "tool_use"
-	ResContentTypeToolResult     ResContentType = "tool_result"
+	ResContentTypeText       ResContentType = "text"
+	ResContentTypeThinking   ResContentType = "thinking"
+	ResContentTypeToolUse    ResContentType = "tool_use"
+	ResContentTypeToolResult ResContentType = "tool_result"
+)
+
+type ResContentDeltaType string
+
+const (
+	ResContentDeltaTypeText      ResContentDeltaType = "text_delta"
+	ResContentDeltaTypeSignature ResContentDeltaType = "signature_delta"
+	ResContentDeltaTypeThinking  ResContentDeltaType = "thinking_delta"
 )
 
 type ReqContent string
@@ -105,16 +110,22 @@ const (
 )
 
 type ResContentBlock struct {
-	Type         ResEventType    `json:"type,omitempty"`
-	Index        int             `json:"index"`
-	ContentBlock ResContentDelta `json:"content_block"`
+	Type         ResEventType `json:"type,omitempty"`
+	Index        int          `json:"index"`
+	ContentBlock struct {
+		Type ResContentType `json:"type,omitempty"`
+	} `json:"content_block"`
 }
 
 type ResContentDelta struct {
-	Type      ResContentType `json:"type,omitempty"`
-	Thinking  string         `json:"thinking,omitempty"`
-	Text      string         `json:"text,omitempty"`
-	Signature string         `json:"signature,omitempty"`
+	Type  ResEventType `json:"type,omitempty"`
+	Index int          `json:"index"`
+	Delta struct {
+		Type      ResContentDeltaType `json:"type,omitempty"`
+		Thinking  string              `json:"thinking,omitempty"`
+		Text      string              `json:"text,omitempty"`
+		Signature string              `json:"signature,omitempty"`
+	} `json:"delta"`
 }
 
 type ResEventMessage struct {
