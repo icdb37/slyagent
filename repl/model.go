@@ -26,6 +26,7 @@ const (
 	ResContentDeltaTypeText      ResContentDeltaType = "text_delta"
 	ResContentDeltaTypeSignature ResContentDeltaType = "signature_delta"
 	ResContentDeltaTypeThinking  ResContentDeltaType = "thinking_delta"
+	ResContentDeltaTypeInputJson ResContentDeltaType = "input_json_delta"
 )
 
 type ReqContent string
@@ -114,6 +115,8 @@ type ResContentBlock struct {
 	Index        int          `json:"index"`
 	ContentBlock struct {
 		Type ResContentType `json:"type,omitempty"`
+		ID   string         `json:"id,omitempty"`
+		Name string         `json:"name,omitempty"`
 	} `json:"content_block"`
 }
 
@@ -121,10 +124,11 @@ type ResContentDelta struct {
 	Type  ResEventType `json:"type,omitempty"`
 	Index int          `json:"index"`
 	Delta struct {
-		Type      ResContentDeltaType `json:"type,omitempty"`
-		Thinking  string              `json:"thinking,omitempty"`
-		Text      string              `json:"text,omitempty"`
-		Signature string              `json:"signature,omitempty"`
+		Type        ResContentDeltaType `json:"type,omitempty"`
+		Thinking    string              `json:"thinking,omitempty"`
+		Text        string              `json:"text,omitempty"`
+		Signature   string              `json:"signature,omitempty"`
+		PartialJson string              `json:"partial_json,omitempty"`
 	} `json:"delta"`
 }
 

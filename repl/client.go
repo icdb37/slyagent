@@ -19,6 +19,7 @@ type Client struct {
 	cfg     *Config
 	hc      *resty.Client
 	history []*Message
+	latest  []*ResContent
 }
 
 func New(cfg *Config) *Client {
@@ -29,16 +30,27 @@ func New(cfg *Config) *Client {
 	return c
 }
 
-// ChatFull 问答，全量回答
-func (c *Client) ChatFull(msg string) (string, error) {
-	msgs := append(c.history, &Message{Role: RoleUser, Content: msg})
+// msg 为 nil 时不追加用户消息，直接用 history 请求（用于工具调用循环续接）
+func (c *Client) buildReqXllm(msg string) *ReqXllm {
+	msgs := append([]*Message{}, c.history...)
+	if msg != "" {
+		msgs = append(msgs, &Message{Role: RoleUser, Content: msg})
+	}
 	param := &ReqXllm{
 		Messages:    msgs,
 		Model:       c.cfg.ModelName,
 		MaxTokens:   c.cfg.MaxTokens,
 		Temperature: c.cfg.Temperature,
-		Stream:      false,
 	}
+	for _, v := range BuiltIns {
+		param.Tools = append(param.Tools, v.Schema)
+	}
+	return param
+}
+
+// ChatFull 问答，全量回答
+func (c *Client) ChatFull(msg string) (string, error) {
+	param := c.buildReqXllm(msg)
 	hreq := c.hc.NewRequest()
 	res := &ResXllm{}
 	hreq.SetBody(param).
@@ -66,16 +78,10 @@ const (
 	prefixEvtData = "data: "
 )
 
-// ChatIncr 问答，增量回答
+// ChatIncr 问答，增量回答。msg 为 nil 时不追加用户消息（工具循环续接场景）
 func (c *Client) ChatIncr(msg string, w io.Writer) error {
-	msgs := append(c.history, &Message{Role: RoleUser, Content: msg})
-	param := &ReqXllm{
-		Messages:    msgs,
-		Model:       c.cfg.ModelName,
-		MaxTokens:   c.cfg.MaxTokens,
-		Temperature: c.cfg.Temperature,
-		Stream:      true,
-	}
+	param := c.buildReqXllm(msg)
+	param.Stream = true
 	hreq := c.hc.NewRequest()
 	hreq.SetBody(param).
 		SetAuthToken(c.cfg.APIKey).
@@ -89,7 +95,7 @@ func (c *Client) ChatIncr(msg string, w io.Writer) error {
 		hres.RawResponse.Body.Close()
 		return errors.New(string(body))
 	}
-	var res *ResXllm
+	res := &ResXllm{}
 	defer hres.RawResponse.Body.Close()
 	r := bufio.NewReader(hres.RawResponse.Body)
 	evtType, evtData := "", []byte{}
@@ -104,6 +110,7 @@ func (c *Client) ChatIncr(msg string, w io.Writer) error {
 			return err
 		}
 		line = bytes.TrimSpace(line)
+		// fmt.Println(string(line))
 		if len(line) == 0 {
 			continue
 		}
@@ -129,7 +136,8 @@ func (c *Client) ChatIncr(msg string, w io.Writer) error {
 				}
 				rc = &ResContent{
 					Type: evtVal.ContentBlock.Type,
-					ID:   fmt.Sprint(evtVal.Index),
+					ID:   evtVal.ContentBlock.ID,
+					Name: evtVal.ContentBlock.Name,
 				}
 				rcs = append(rcs, rc)
 			case "content_block_stop":
@@ -146,10 +154,13 @@ func (c *Client) ChatIncr(msg string, w io.Writer) error {
 					w.Write([]byte(evtVal.Delta.Text))
 				case ResContentDeltaTypeSignature: // 增量前面
 					rc.Signature = evtVal.Delta.Signature
+				case ResContentDeltaTypeInputJson:
+					rc.Input = append(rc.Input, json.RawMessage(evtVal.Delta.PartialJson)...)
 				}
 			}
 		}
 	}
+	c.latest = rcs
 	res.Content = rcs
 	c.history = append(c.history, &Message{Role: RoleAssistant, Content: res.Content})
 	return nil
@@ -238,12 +249,18 @@ func (c *Client) doqa_incr(ch chan error) {
 		}
 		if cmd[0] != '/' {
 			print := outp.NewStdout(outp.ColorBlue)
-			err = c.ChatIncr(string(cmd), print)
+			msg := string(cmd)
+		tool_next:
+			err = c.ChatIncr(msg, print)
 			if err != nil {
 				print.ResetColor(outp.ColorRed)
 				print.Write([]byte(err.Error()))
 				print.Close()
 				return
+			}
+			if c.execTool() {
+				msg = ""
+				goto tool_next
 			}
 			print.Close()
 			continue
@@ -266,4 +283,63 @@ func (c *Client) reset() {
 		return
 	}
 	c.history = c.history[:0]
+}
+
+func (c *Client) execTool() bool {
+	if len(c.latest) == 0 {
+		return false
+	}
+	toolResults := []*ResContent{}
+	toolUsed := false
+	for _, rc := range c.latest {
+		if rc.Type != ResContentTypeToolUse {
+			continue
+		}
+		toolUsed = true
+		ec, ok := BuiltIns[rc.Name]
+		if !ok {
+			toolResults = append(toolResults, &ResContent{
+				Type:      ResContentTypeToolResult,
+				ToolUseID: rc.ID,
+				Result:    json.RawMessage(fmt.Sprintf(`{"error":"unknown tool %q"}`, rc.Name)),
+			})
+			continue
+		}
+		if err := json.Unmarshal(rc.Input, ec.Param); err != nil {
+			toolResults = append(toolResults, &ResContent{
+				Type:      ResContentTypeToolResult,
+				ToolUseID: rc.ID,
+				Result:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, err.Error())),
+			})
+			continue
+		}
+		result, err := ec.Process(ec.Param)
+		if err != nil {
+			toolResults = append(toolResults, &ResContent{
+				Type:      ResContentTypeToolResult,
+				ToolUseID: rc.ID,
+				Result:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, err.Error())),
+			})
+			continue
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			toolResults = append(toolResults, &ResContent{
+				Type:      ResContentTypeToolResult,
+				ToolUseID: rc.ID,
+				Result:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, err.Error())),
+			})
+			continue
+		}
+		toolResults = append(toolResults, &ResContent{
+			Type:      ResContentTypeToolResult,
+			ToolUseID: rc.ID,
+			Result:    data,
+		})
+	}
+	if toolUsed {
+		c.history = append(c.history, &Message{Role: RoleUser, Content: toolResults})
+	}
+	c.latest = c.latest[:0]
+	return toolUsed
 }
