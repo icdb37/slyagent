@@ -16,5 +16,5 @@ func main() {
 	c := repl.New(cfg)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Kill, os.Interrupt)
 	defer cancel()
-	c.Loop(ctx)
+	c.Loop(ctx, 1)
 }

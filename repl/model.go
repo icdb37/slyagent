@@ -14,10 +14,13 @@ const (
 type ResContentType string
 
 const (
-	ResContentTypeText       ResContentType = "text"
-	ResContentTypeThinking   ResContentType = "thinking"
-	ResContentTypeToolUse    ResContentType = "tool_use"
-	ResContentTypeToolResult ResContentType = "tool_result"
+	ResContentTypeText           ResContentType = "text"
+	ResContentTypeTextDelta      ResContentType = "text_delta"
+	ResContentTypeSignatureDelta ResContentType = "signature_delta"
+	ResContentTypeThinking       ResContentType = "thinking"
+	ResContentTypeThinkingDelta  ResContentType = "thinking_delta"
+	ResContentTypeToolUse        ResContentType = "tool_use"
+	ResContentTypeToolResult     ResContentType = "tool_result"
 )
 
 type ReqContent string
@@ -88,4 +91,33 @@ type ResXllm struct {
 		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 	StopReason string `json:"stop_reason"`
+}
+
+type ResEventType string
+
+const (
+	ResEventTypeMessageStart      = "message_start"
+	ResEventTypePing              = "ping"
+	ResEventTypeContentBlockStart = "content_block_start"
+	ResEventTypeContentBlockDelta = "content_block_delta"
+	ResEventTypeContentBlockStop  = "content_block_stop"
+	ResEventTypeMessageStop       = "message_stop"
+)
+
+type ResContentBlock struct {
+	Type         ResEventType    `json:"type,omitempty"`
+	Index        int             `json:"index"`
+	ContentBlock ResContentDelta `json:"content_block"`
+}
+
+type ResContentDelta struct {
+	Type      ResContentType `json:"type,omitempty"`
+	Thinking  string         `json:"thinking,omitempty"`
+	Text      string         `json:"text,omitempty"`
+	Signature string         `json:"signature,omitempty"`
+}
+
+type ResEventMessage struct {
+	Type    string   `json:"type,omitempty"`
+	Message *ResXllm `json:"message,omitempty"`
 }

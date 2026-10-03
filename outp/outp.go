@@ -46,3 +46,7 @@ func (t *Terminal) Close() error {
 	t.outer.Write([]byte("\n" + colorReset))
 	return nil
 }
+
+func (t *Terminal) ResetColor(c Color) {
+	t.outer.Write([]byte(c))
+}
