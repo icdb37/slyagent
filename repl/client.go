@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slyagent/inp"
 	"slyagent/outp"
 	"strings"
 
@@ -230,20 +231,15 @@ func (c *Client) doqa_full(ch chan error) {
 
 func (c *Client) doqa_incr(ch chan error) {
 	var (
-		cmd []byte
+		cmd string
 		err error
 	)
 	defer func() {
 		ch <- err
 	}()
-	r := bufio.NewReader(os.Stdin)
 	for {
 		os.Stdout.Write([]byte("> "))
-		cmd, _, err = r.ReadLine()
-		if err != nil {
-			return
-		}
-		cmd = bytes.TrimSpace(cmd)
+		cmd = inp.ReadLine()
 		if len(cmd) == 0 {
 			continue
 		}
@@ -265,7 +261,7 @@ func (c *Client) doqa_incr(ch chan error) {
 			print.Close()
 			continue
 		}
-		switch strings.ToLower(string(cmd)) {
+		switch strings.ToLower(cmd) {
 		case "/q", "/quite", "/exit":
 			return
 		case "/clear", "/reset":

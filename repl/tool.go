@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"slyagent/inp"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,10 @@ type UnitTool struct {
 type ToolShellParam struct {
 	Cmd string   `json:"cmd"`
 	Arg []string `json:"arg"`
+}
+
+func (t *ToolShellParam) Format() string {
+	return fmt.Sprintf("%s %s", t.Cmd, strings.Join(t.Arg, " "))
 }
 
 // ToolShellResult 终端命令执行结果：合并 stdout/stderr，附带退出码
@@ -87,7 +93,7 @@ var BuiltIns = map[string]*UnitTool{
 	"ruh_shell": {
 		Schema: &XllmTool{
 			Name:        "ruh_shell",
-			Description: "在 shell 执行一条命令，返回 stdout+stderr 合并输出与退出码。\n\n参数：cmd 是可执行文件名或绝对路径，arg 是参数数组。示例：cmd=[\"bash\"]、arg=[\"-c\", \"ls\"]。\n\n返回：output 是合并输出（超长末尾追加截断标记）；code 是退出码——0=成功；非 0=异常退出，结合 output 判断原因；-1=工具超时强制 kill。\n\n约束：超时时长与输出上限由配置决定；输出超限时建议在命令侧用 grep/head/tail 预过滤。",
+			Description: "在 shell 执行一条命令，返回 stdout+stderr 合并输出与退出码。\n\n参数：cmd 是可执行文件名或绝对路径，arg 是参数数组。示例：cmd=[\"bash\"]、arg=[\"-c\", \"ls\"]。\n\n返回：output 是合并输出（超长末尾追加截断标记）；code 是退出码——0=成功；非 0=异常退出，结合 output 判断原因；-1=工具超时强制 kill。\n\n约束：超时时长与输出上限由配置决定；输出超限时建议在命令侧用 grep/head/tail 预过滤。\n\n用户交互：每次执行前会向用户发起确认 [y/N]，只有用户回答 y/yes 才会真正运行；任何其他输入（包括直接回车、no、ctrl-c 等）都视为取消。\n\n取消语义：当用户取消时，工具会返回错误\"用户取消运行命令\"。收到该错误后必须立即停止当前任务——不要再调用本工具，也不要尝试用其它变体命令绕过（例如改写路径、改用 sudo/powershell 之类）；不要再调用任何其它工具；以一句简短话告知用户命令已被取消，然后结束当前问答轮，不要再生成后续动作。",
 			InputSchema: json.RawMessage(`{
 				"type":"object",
 				"properties":{
@@ -103,6 +109,11 @@ var BuiltIns = map[string]*UnitTool{
 			ts, ok := a.(*ToolShellParam)
 			if !ok {
 				return nil, fmt.Errorf("ruh_shell param type invalid，请检查代码之后重新运行")
+			}
+			os.Stdout.WriteString("请求执行命令: " + ts.Format() + "; [y/N]: ")
+			ans := inp.ReadAnswer(3, true, true, " invalid again: ", "y", "yes", "ok", "n", "no")
+			if ans != "y" && ans != "yes" && ans != "ok" {
+				return nil, fmt.Errorf("用户取消运行命令")
 			}
 			// 用 context.WithTimeout 给子进程加 1 分钟硬超时，到期后 exec 会自动 kill
 			ctx, cancel := context.WithTimeout(context.Background(), shellRunTimeout)
