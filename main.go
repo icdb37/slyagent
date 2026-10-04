@@ -12,6 +12,7 @@ func main() {
 		ModelName: "MiniMax-M2.7",
 		BaseURL:   "https://api.minimax.cn/anthropic/v1/messages",
 		APIKey:    os.Getenv("LLM_API_KEY"),
+		MaxTokens: 1024 * 10,
 	}
 	c := repl.New(cfg)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Kill, os.Interrupt)

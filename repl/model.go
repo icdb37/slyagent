@@ -45,8 +45,9 @@ type ResContent struct {
 	Input json.RawMessage `json:"input,omitempty"`
 
 	// tool_result 块：工具执行结果（Anthropic 协议挂在 user 消息里）
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Result    json.RawMessage `json:"content,omitempty"`
+	// content 字段必须是字符串或内容块数组；不能是裸 JSON 对象
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Result    string `json:"content,omitempty"`
 }
 
 type Message struct {

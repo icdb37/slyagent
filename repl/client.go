@@ -296,46 +296,31 @@ func (c *Client) execTool() bool {
 			continue
 		}
 		toolUsed = true
+		toolResult := &ResContent{
+			Type:      ResContentTypeToolResult,
+			ToolUseID: rc.ID,
+		}
+		toolResults = append(toolResults, toolResult)
 		ec, ok := BuiltIns[rc.Name]
 		if !ok {
-			toolResults = append(toolResults, &ResContent{
-				Type:      ResContentTypeToolResult,
-				ToolUseID: rc.ID,
-				Result:    json.RawMessage(fmt.Sprintf(`{"error":"unknown tool %q"}`, rc.Name)),
-			})
+			toolResult.Result = fmt.Sprintf(`{"error":"unknown tool %q"}`, rc.Name)
 			continue
 		}
 		if err := json.Unmarshal(rc.Input, ec.Param); err != nil {
-			toolResults = append(toolResults, &ResContent{
-				Type:      ResContentTypeToolResult,
-				ToolUseID: rc.ID,
-				Result:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, err.Error())),
-			})
+			toolResult.Result = fmt.Sprintf(`{"error":%q}`, err.Error())
 			continue
 		}
 		result, err := ec.Process(ec.Param)
 		if err != nil {
-			toolResults = append(toolResults, &ResContent{
-				Type:      ResContentTypeToolResult,
-				ToolUseID: rc.ID,
-				Result:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, err.Error())),
-			})
+			toolResult.Result = fmt.Sprintf(`{"error":%q}`, err.Error())
 			continue
 		}
 		data, err := json.Marshal(result)
 		if err != nil {
-			toolResults = append(toolResults, &ResContent{
-				Type:      ResContentTypeToolResult,
-				ToolUseID: rc.ID,
-				Result:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, err.Error())),
-			})
+			toolResult.Result = fmt.Sprintf(`{"error":%q}`, err.Error())
 			continue
 		}
-		toolResults = append(toolResults, &ResContent{
-			Type:      ResContentTypeToolResult,
-			ToolUseID: rc.ID,
-			Result:    data,
-		})
+		toolResult.Result = string(data)
 	}
 	if toolUsed {
 		c.history = append(c.history, &Message{Role: RoleUser, Content: toolResults})
