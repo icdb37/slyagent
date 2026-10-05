@@ -50,9 +50,20 @@ type ResContent struct {
 	Result    string `json:"content,omitempty"`
 }
 
+type MessageAction string
+
+const (
+	MessageActionUser       MessageAction = "user"
+	MessageActionToolCall   MessageAction = "tool_call"
+	MessageActionToolResult MessageAction = "tool_result"
+	MessageActionAssistant  MessageAction = "assistant"
+)
+
 type Message struct {
-	Role    Role `json:"role"`
-	Content any  `json:"content"`
+	Role    Role          `json:"role"`
+	Content any           `json:"content"`
+	size    int           // 消息大小
+	action  MessageAction // 操作
 }
 
 type XllmThinking struct {
@@ -136,4 +147,16 @@ type ResContentDelta struct {
 type ResEventMessage struct {
 	Type    string   `json:"type,omitempty"`
 	Message *ResXllm `json:"message,omitempty"`
+}
+
+// 流式响应中 message_delta 事件：刷新 output_tokens、stop_reason
+type ResMessageDelta struct {
+	Type  string `json:"type,omitempty"`
+	Delta struct {
+		StopReason   string `json:"stop_reason,omitempty"`
+		StopSequence string `json:"stop_sequence,omitempty"`
+	} `json:"delta"`
+	Usage struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
 }

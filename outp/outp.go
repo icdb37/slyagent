@@ -1,6 +1,7 @@
 package outp
 
 import (
+	"fmt"
 	"io"
 	"os"
 )
@@ -27,12 +28,14 @@ const (
 type Terminal struct {
 	color Color
 	outer io.Writer
+	nnl   bool
 }
 
 func NewStdout(c Color) *Terminal {
 	t := &Terminal{
 		color: c,
 		outer: os.Stdout,
+		nnl:   true,
 	}
 	t.outer.Write([]byte(c))
 	return t
@@ -43,10 +46,25 @@ func (t *Terminal) Write(data []byte) (int, error) {
 }
 
 func (t *Terminal) Close() error {
-	t.outer.Write([]byte("\n" + colorReset))
+	if t.nnl {
+		t.outer.Write([]byte("\n"))
+	}
+	t.outer.Write([]byte(colorReset))
 	return nil
 }
 
 func (t *Terminal) ResetColor(c Color) {
 	t.outer.Write([]byte(c))
+}
+
+func Print(v any, c Color) {
+	t := NewStdout(c)
+	t.Write([]byte(fmt.Append(nil, v)))
+	t.Close()
+}
+func Prompt(c Color) {
+	t := NewStdout(c)
+	t.nnl = false
+	t.Write([]byte("> "))
+	t.Close()
 }
