@@ -1,6 +1,11 @@
 package repl
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"unicode"
+)
 
 type Role string
 
@@ -59,11 +64,108 @@ const (
 	MessageActionAssistant  MessageAction = "assistant"
 )
 
+// MessageContent 是 Message.Content 的封闭接口：只接受 TextContent / BlocksContent。
+// 静态保证 Content 字段不会被装入任意值，type switch 配合 isMessageContent
+// 哨兵方法形成编译期可枚举的"和类型"。
+//
+// 两个变体各自实现 MarshalJSON，使 json.Marshal(Message) 出的 wire 形态与
+// Anthropic 协议一致：
+//   - TextContent  → "content":"<Text>"            （system / user 纯文本）
+//   - BlocksContent → "content":[{...},{...}]      （assistant / user 工具结果）
+type MessageContent interface {
+	isMessageContent()
+	GetTexts() []string
+}
+
+type TextContent struct{ Text string }
+
+func (TextContent) isMessageContent() {}
+
+// GetTexts 返回此 content 形态包含的纯文本片段。
+// TextContent 自身是一段文本；BlocksContent 汇总各 text 块。
+// 统一接口便于压缩、显示、history 大小估算等场景无需关心具体形态。
+func (t TextContent) GetTexts() []string {
+	return []string{t.Text}
+}
+
+// MarshalJSON 把 TextContent 序列化为 JSON 字符串，与 wire 形态对齐。
+func (t TextContent) MarshalJSON() ([]byte, error) { return json.Marshal(t.Text) }
+
+type BlocksContent struct{ Blocks []*ResContent }
+
+func (BlocksContent) isMessageContent() {}
+
+func (b BlocksContent) GetTexts() []string {
+	texts := make([]string, 0, len(b.Blocks))
+	for _, c := range b.Blocks {
+		if c.Text != "" {
+			texts = append(texts, c.Text)
+		}
+	}
+	return texts
+}
+
+// MarshalJSON 把 BlocksContent 序列化为 JSON 数组。
+func (b BlocksContent) MarshalJSON() ([]byte, error) { return json.Marshal(b.Blocks) }
+
 type Message struct {
-	Role    Role          `json:"role"`
-	Content any           `json:"content"`
-	size    int           // 消息大小
-	action  MessageAction // 操作
+	Role    Role           `json:"role"`
+	Content MessageContent `json:"content"`
+	size    int            // 消息大小
+	action  MessageAction  // 操作
+}
+
+// UnmarshalJSON 从 wire 形态恢复 Message：以 role 为主判别决定 Content 形态。
+//
+// 协议事实：
+//   - system / agent  → TextContent
+//   - assistant       → BlocksContent
+//   - user            → 二义（纯文本 或 tool_result 块数组），sniff content 首字节
+//
+// 用 role 决定 content 类型而不是纯 sniff，是因为大多数 role 的 content 形态
+// 是确定的；只有 user 兼容两种 wire 形态。
+func (m *Message) UnmarshalJSON(data []byte) error {
+	var probe struct {
+		Role    Role            `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	m.Role = probe.Role
+	switch probe.Role {
+	case RoleSystem, RoleAgent:
+		var t TextContent
+		if err := json.Unmarshal(probe.Content, &t.Text); err != nil {
+			return err
+		}
+		m.Content = t
+	case RoleAssistant:
+		var b BlocksContent
+		if err := json.Unmarshal(probe.Content, &b.Blocks); err != nil {
+			return err
+		}
+		m.Content = b
+	case RoleUser:
+		// user 二义：文本（首字节 "）或块数组（首字节 [）
+		head := bytes.TrimLeftFunc(probe.Content, unicode.IsSpace)
+		if len(head) > 0 && head[0] == '"' {
+			var t TextContent
+			if err := json.Unmarshal(probe.Content, &t.Text); err != nil {
+				return err
+			}
+			m.Content = t
+		} else {
+			var b BlocksContent
+			if err := json.Unmarshal(probe.Content, &b.Blocks); err != nil {
+				return err
+			}
+			m.Content = b
+		}
+	default:
+		return fmt.Errorf("Message: 未知 role %q", probe.Role)
+	}
+	return nil
 }
 
 type XllmThinking struct {

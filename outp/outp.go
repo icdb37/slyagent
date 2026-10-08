@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"slyagent/enum"
 )
 
 // 问答输出展示
@@ -25,13 +27,29 @@ const (
 	colorReset = "\x1b[0m"
 )
 
+// roleColor 把 enum.Role 映射到对应的终端颜色
+func roleColor(r enum.Role) Color {
+	switch r {
+	case enum.RoleSystem:
+		return ColorGrey
+	case enum.RoleUser:
+		return ColorCyan
+	case enum.RoleAssistant:
+		return ColorGreen
+	case enum.RoleAgent:
+		return ColorBlue
+	}
+	return ""
+}
+
 type Terminal struct {
 	color Color
 	outer io.Writer
 	nnl   bool
 }
 
-func NewStdout(c Color) *Terminal {
+func NewStdout(r enum.Role) *Terminal {
+	c := roleColor(r)
 	t := &Terminal{
 		color: c,
 		outer: os.Stdout,
@@ -57,13 +75,13 @@ func (t *Terminal) ResetColor(c Color) {
 	t.outer.Write([]byte(c))
 }
 
-func Print(v any, c Color) {
-	t := NewStdout(c)
+func Print(v any, r enum.Role) {
+	t := NewStdout(r)
 	t.Write([]byte(fmt.Append(nil, v)))
 	t.Close()
 }
-func Prompt(c Color) {
-	t := NewStdout(c)
+func Prompt(r enum.Role) {
+	t := NewStdout(r)
 	t.nnl = false
 	t.Write([]byte("> "))
 	t.Close()

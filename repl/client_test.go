@@ -18,7 +18,7 @@ func TestReplClient(t *testing.T) {
 		BaseURL:   "https://api.minimax.cn/anthropic/v1/messages",
 		APIKey:    apiKey,
 	}
-	c := New(cfg)
+	c, _ := New(cfg)
 	msg, err := c.ChatFull("数学鸡兔同笼问题，头共10个，腿共30只，求几只鸡几个兔")
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestReplClient(t *testing.T) {
 func mkMsg(action MessageAction, body string) *Message {
 	return &Message{
 		Role:    roleOf(action),
-		Content: body,
+		Content: TextContent{Text: body},
 		action:  action,
 	}
 }
@@ -46,7 +46,7 @@ func roleOf(a MessageAction) Role {
 
 // 诉求 3：总数 < MessageRecentNum*3 不压缩
 func TestCompressIndex_BelowTrigger(t *testing.T) {
-	c := New(&Config{})
+	c, _ := New(&Config{})
 	// 2*MessageRecentNum 条，仍 < 3*MessageRecentNum
 	for i := 0; i < MessageRecentNum*2; i++ {
 		c.history = append(c.history, mkMsg(MessageActionUser, fmt.Sprintf("u%d", i)))
@@ -58,7 +58,7 @@ func TestCompressIndex_BelowTrigger(t *testing.T) {
 
 // 基础压缩：交替 user/assistant，最旧处可切
 func TestCompressIndex_BasicCutAtOldest(t *testing.T) {
-	c := New(&Config{})
+	c, _ := New(&Config{})
 	// 7 条：Asst, User, Asst, User, Asst, User, Asst
 	// 总大小需要超过 MessageHistorySize，否则中间区不压缩
 	s := strings.Repeat("a", 2*1024) // 2KB/条
@@ -79,7 +79,7 @@ func TestCompressIndex_BasicCutAtOldest(t *testing.T) {
 
 // tool pair 必须成对保留
 func TestCompressIndex_ToolPairPreserved(t *testing.T) {
-	c := New(&Config{})
+	c, _ := New(&Config{})
 	// Asst(text), User, Asst(tool_call), User(tool_result), User, Asst
 	// 6 条处于中间区；每条 ~2KB，总大小 ~12KB > MessageHistorySize，触发压缩
 	s := strings.Repeat("a", 2*1024)
@@ -123,17 +123,17 @@ func TestCompressIndex_ToolPairPreserved(t *testing.T) {
 
 // 诉求 2：中间区总大小超阈值时触发压缩
 func TestCompressIndex_SizeThreshold(t *testing.T) {
-	c := New(&Config{})
+	c, _ := New(&Config{})
 	// 6 条处于中间区；m2 设成 20KB，总大小远超阈值，必然触发压缩
 	s1 := strings.Repeat("a", 1024)
 	sBig := strings.Repeat("a", 20*1024)
 	c.history = []*Message{
-		mkMsg(MessageActionAssistant, s1),  // 0
-		mkMsg(MessageActionUser, s1),       // 1
+		mkMsg(MessageActionAssistant, s1),   // 0
+		mkMsg(MessageActionUser, s1),        // 1
 		mkMsg(MessageActionAssistant, sBig), // 2 —— 超胖
-		mkMsg(MessageActionUser, s1),       // 3
-		mkMsg(MessageActionAssistant, s1),  // 4  recent
-		mkMsg(MessageActionAssistant, s1),  // 5  recent
+		mkMsg(MessageActionUser, s1),        // 3
+		mkMsg(MessageActionAssistant, s1),   // 4  recent
+		mkMsg(MessageActionAssistant, s1),   // 5  recent
 	}
 	cut := c.compressIndex()
 	if cut < 0 {
@@ -150,7 +150,7 @@ func TestCompressIndex_SizeThreshold(t *testing.T) {
 	}
 	// m2 必须出现在被丢的一侧
 	for i := cut; i < len(c.history); i++ {
-		if c.history[i].Content == sBig {
+		if tc, ok := c.history[i].Content.(TextContent); ok && tc.Text == sBig {
 			t.Fatalf("cat 含 20KB 那条，阈值未生效：cut=%d", cut)
 		}
 	}
@@ -158,7 +158,7 @@ func TestCompressIndex_SizeThreshold(t *testing.T) {
 
 // recent 块不合法时（单条 ToolCall 在末尾），不应给出破坏配对的切点
 func TestCompressIndex_RecentBlockIncomplete(t *testing.T) {
-	c := New(&Config{})
+	c, _ := New(&Config{})
 	// 末尾 2 条是 Assistant(text) + ToolCall，但没 ToolResult 跟。
 	// recent 块不完整，但 compressIndex 不应该越界给出破坏配对的切点。
 	seq := []MessageAction{
@@ -200,7 +200,7 @@ func TestCompressIndex_RecentBlockIncomplete(t *testing.T) {
 
 // User 消息也应当作合法切点
 func TestCompressIndex_UserIsValidCut(t *testing.T) {
-	c := New(&Config{})
+	c, _ := New(&Config{})
 	// 6 条处于中间区，每条 ~2KB，总大小 ~12KB > MessageHistorySize，触发压缩
 	// 序列：Asst, User, Asst, User, Asst, User
 	s := strings.Repeat("a", 2*1024)

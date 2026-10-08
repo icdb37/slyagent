@@ -58,8 +58,7 @@ func init() {
 			}
 			prompt := fmt.Sprintf("即将%s：%s（%d 字节）; [y/N]: ", oldInfo, tp.Format(), len(tp.Content))
 			os.Stdout.WriteString(prompt)
-			ans := inp.ReadAnswer(3, true, true, " 重新输入: : ", "y", "yes", "ok", "n", "no")
-			if ans != "y" && ans != "yes" && ans != "ok" {
+			if !inp.AskYesNo("") {
 				return nil, fmt.Errorf("用户取消运行命令")
 			}
 			if dir := filepath.Dir(tp.Path); dir != "" {
@@ -130,8 +129,7 @@ func init() {
 			prompt := fmt.Sprintf("\n即将对 %s 应用 %d 处修改（%d → %d 字节）：\n%s\n确认写入? [y/N]: ",
 				tp.Path, len(tp.Hunks), len(original), len(patched), formatHunks(tp.Hunks))
 			os.Stdout.WriteString(prompt)
-			ans := inp.ReadAnswer(3, true, true, " 重新输入: : ", "y", "yes", "ok", "n", "no")
-			if ans != "y" && ans != "yes" && ans != "ok" {
+			if !inp.AskYesNo("") {
 				return nil, fmt.Errorf("用户取消运行命令")
 			}
 			if err := os.WriteFile(tp.Path, []byte(patched), 0644); err != nil {

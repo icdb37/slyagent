@@ -8,6 +8,16 @@ import (
 
 var reader = bufio.NewReader(os.Stdin)
 
+// AskYesNo 询问用户是否确认（y/n）。
+// 进程可通过重新赋值替换默认实现（如 TUI 模式下用界面代替 stdin）。
+var AskYesNo = defaultAskYesNo
+
+func defaultAskYesNo(prompt string) bool {
+	os.Stdout.WriteString(prompt)
+	ans := ReadAnswer(3, true, true, " 重新输入: ", "y", "yes", "ok", "n", "no")
+	return ans == "y" || ans == "yes" || ans == "ok"
+}
+
 func ReadLine() string {
 	line, _, _ := reader.ReadLine()
 	return string(line)

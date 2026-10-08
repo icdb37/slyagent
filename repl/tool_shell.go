@@ -59,8 +59,7 @@ func init() {
 				return nil, fmt.Errorf("ruh_shell param type invalid，请检查代码之后重新运行")
 			}
 			os.Stdout.WriteString("请求执行命令: " + tp.Format() + "; [y/N]: ")
-			ans := inp.ReadAnswer(3, true, true, " 重新输入: : ", "y", "yes", "ok", "n", "no")
-			if ans != "y" && ans != "yes" && ans != "ok" {
+			if !inp.AskYesNo("") {
 				return nil, fmt.Errorf("用户取消运行命令")
 			}
 			return run_cmd(tp.Cmd, tp.Arg...)
