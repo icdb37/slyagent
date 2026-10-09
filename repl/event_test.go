@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"slyagent/enum"
 )
 
-// decodeTest 是 type-switch 版的 DecodeEvtRepl：表驱动测试里 param 是 any，
-// 而 DecodeEvtRepl 需要具体 *T，故通过此函数分派。该函数只用于测试。
+// decodeTest 把 any 形态的 param 分派到对应的 DecodeEvtRepl 重载。
 func decodeTest(param any, kind EvtKind) *EvtRepl {
 	switch v := param.(type) {
 	case *EvtPayloadData:
@@ -27,8 +28,7 @@ func decodeTest(param any, kind EvtKind) *EvtRepl {
 }
 
 // TestDecodeEvtRepl_AllKinds 给每种 Kind 配一个示例 payload，验证 DecodeEvtRepl
-// 正确产生 envelope（Kind 不空、Payload 是合法 JSON）。Kind → payload schema 由
-// 调用方自定，测试只保证"wire 形态合法"。
+// 产出合法 envelope：Kind 不空、Payload 是合法 JSON。
 func TestDecodeEvtRepl_AllKinds(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -50,7 +50,6 @@ func TestDecodeEvtRepl_AllKinds(t *testing.T) {
 		{"clear", Clear, &EvtPayloadData{}, true},
 		{"quit", Quit, &EvtPayloadData{}, true},
 		{"session_list", SessionList, &EvtPayloadSessionList{IDs: []string{"a", "b"}}, true},
-		{"session_new", SessionNew, &EvtPayloadData{Data: "new"}, true},
 		{"session_load", SessionLoad, &EvtPayloadData{Data: "[已加载: x]"}, true},
 	}
 	for _, c := range cases {
@@ -149,8 +148,8 @@ func TestEventWire_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestEncodeEvent_BadPayload Payload 不是合法 JSON 时返回 error。
-// 实现里用 new(T) 预分配，所以返回的 *T 仍非 nil（带零值），错误只走 err。
+// TestEncodeEvent_BadPayload Payload 不是合法 JSON 时返回 error；返回的 *T 非 nil，
+// 错误仅靠 err 表达。
 func TestEncodeEvent_BadPayload(t *testing.T) {
 	env := &EvtRepl{Kind: Busy, Payload: "not json"}
 	p, err := EncodeEvent[EvtPayloadBusy](env)
@@ -158,15 +157,14 @@ func TestEncodeEvent_BadPayload(t *testing.T) {
 		t.Fatal("expected error for bad payload")
 	}
 	if p == nil {
-		t.Fatal("EncodeEvent 总是返回 *T（new(T) 预分配），错误时仅靠 err 表达")
+		t.Fatal("EncodeEvent 总是返回 *T，错误时仅靠 err 表达")
 	}
 	if p.Busy != false {
 		t.Fatalf("error path 应是零值，得到 Busy=%v", p.Busy)
 	}
 }
 
-// TestEncodeEvent_EmptyPayload 空 payload 让 json.Unmarshal 报错——这是
-// json.Unmarshal 本身的行为，本 API 不做特殊处理。
+// TestEncodeEvent_EmptyPayload 空 payload 让 json.Unmarshal 报错。
 func TestEncodeEvent_EmptyPayload(t *testing.T) {
 	env := &EvtRepl{Kind: Clear, Payload: ""}
 	_, err := EncodeEvent[EvtPayloadData](env)
@@ -175,9 +173,7 @@ func TestEncodeEvent_EmptyPayload(t *testing.T) {
 	}
 }
 
-// TestDecodeEvtRepl_NonNilError 验证含 error 字段的 payload 至少能 marshal 成 JSON。
-// encoding/json 当前把 error 接口按底层 struct 序列化（errors.errorString → {"s":"..."}）。
-// 这里只保证"不 panic、不报错"；若要 wire 形态可读，需为含 error 的类型加 MarshalJSON。
+// TestDecodeEvtRepl_NonNilError 含 error 字段的 payload 至少能 marshal 成 JSON。
 func TestDecodeEvtRepl_NonNilError(t *testing.T) {
 	ev := &EvtPayloadData{Data: "boom"}
 	env := DecodeEvtRepl(ev, AssistantEnd)
@@ -189,8 +185,7 @@ func TestDecodeEvtRepl_NonNilError(t *testing.T) {
 	}
 }
 
-// TestEvtRepl_JSONTags 保证 wire 字段名稳定：kind / payload（不是大写）。
-// 改 tag 是协议级破坏，必须显式 review。
+// TestEvtRepl_JSONTags 锁定 wire 字段名（kind / payload）与 Kind 字符串值大写。
 func TestEvtRepl_JSONTags(t *testing.T) {
 	env := DecodeEvtRepl(&EvtPayloadData{Data: "hi"}, UserEcho)
 	data, err := json.Marshal(env)
@@ -203,60 +198,87 @@ func TestEvtRepl_JSONTags(t *testing.T) {
 	if !strings.Contains(string(data), `"payload":`) {
 		t.Fatalf("wire 应含 \"payload\" 字段：%s", data)
 	}
-	// 反过来：wire 字符串值必须是大写（EvtKind 自身 string 化时仍保留大写）
+	// EvtKind 序列化为大写字符串值
 	if !strings.Contains(string(data), `"USER_ECHO"`) {
 		t.Fatalf("wire 应含 Kind 字符串值 USER_ECHO：%s", data)
 	}
 }
 
-// TestToSessionItems 验证 []*Message → []SessionItem 的拆分。
-//
-// 关键 case：assistant 含 text + thinking + tool_use 三种块时，应分别生成
-// SessionItemAssistant / SessionItemThinking / SessionItemToolCall 三条；
-// user 的 tool_result 块数组也应拆成多条 SessionItemToolResult。
+// TestToSessionItems 验证 []*Message → []SessionItem 的映射规则：
+// TextContent 包装为单元素 Contents，BlocksContent 复用 Blocks，Role 字段保留。
 func TestToSessionItems(t *testing.T) {
 	toolInput := json.RawMessage(`{"cmd":"ls"}`)
 	msgs := []*Message{
-		{Role: RoleUser, Content: TextContent{Text: "hi"}},
-		{Role: RoleAssistant, Content: BlocksContent{Blocks: []*ResContent{
-			{Type: ResContentTypeThinking, Thinking: "思考中..."},
-			{Type: ResContentTypeText, Text: "让我查一下"},
-			{Type: ResContentTypeToolUse, ID: "u1", Name: "shell", Input: toolInput},
+		{Role: enum.RoleUser, Content: TextContent{Text: "hi"}},
+		{Role: enum.RoleAssistant, Content: BlocksContent{Blocks: []*ResContent{
+			{Type: enum.ResContentTypeThinking, Thinking: "思考中..."},
+			{Type: enum.ResContentTypeText, Text: "让我查一下"},
+			{Type: enum.ResContentTypeToolUse, ID: "u1", Name: "shell", Input: toolInput},
 		}}},
-		{Role: RoleUser, Content: BlocksContent{Blocks: []*ResContent{
-			{Type: ResContentTypeToolResult, ToolUseID: "u1", Result: "file.txt\nfile2.txt"},
+		{Role: enum.RoleUser, Content: BlocksContent{Blocks: []*ResContent{
+			{Type: enum.ResContentTypeToolResult, ToolUseID: "u1", Result: "file.txt\nfile2.txt"},
 		}}},
-		{Role: RoleSystem, Content: TextContent{Text: "you are helpful"}},
+		{Role: enum.RoleSystem, Content: TextContent{Text: "you are helpful"}},
 	}
 	items := ToSessionItems(msgs)
 
-	// 期望：user → assistant(thinking + text + tool_call) → user(tool_result) → system
-	if len(items) != 6 {
-		t.Fatalf("len(items) = %d, want 6 (got %+v)", len(items), items)
+	// 期望：4 条消息 → 4 条 SessionItem（一对一）
+	if len(items) != 4 {
+		t.Fatalf("len(items) = %d, want 4 (got %+v)", len(items), items)
 	}
-	want := []SessionItem{
-		{Kind: SessionItemUser, Text: "hi"},
-		{Kind: SessionItemThinking, Text: "思考中..."},
-		{Kind: SessionItemAssistant, Text: "让我查一下"},
-		{Kind: SessionItemToolCall, Name: "shell", Input: `{"cmd":"ls"}`},
-		{Kind: SessionItemToolResult, Result: "file.txt\nfile2.txt"},
-		{Kind: SessionItemSystem, Text: "you are helpful"},
+
+	// item 0: user 文本包装为单 text 块
+	if items[0].Role != enum.RoleUser {
+		t.Errorf("items[0].Role = %q, want %q", items[0].Role, enum.RoleUser)
 	}
-	for i, w := range want {
-		if items[i].Kind != w.Kind {
-			t.Errorf("items[%d].Kind = %q, want %q", i, items[i].Kind, w.Kind)
-		}
-		if items[i].Text != w.Text {
-			t.Errorf("items[%d].Text = %q, want %q", i, items[i].Text, w.Text)
-		}
-		if items[i].Name != w.Name {
-			t.Errorf("items[%d].Name = %q, want %q", i, items[i].Name, w.Name)
-		}
-		if items[i].Input != w.Input {
-			t.Errorf("items[%d].Input = %q, want %q", i, items[i].Input, w.Input)
-		}
-		if items[i].Result != w.Result {
-			t.Errorf("items[%d].Result = %q, want %q", i, items[i].Result, w.Result)
-		}
+	if got := items[0].Contents; len(got) != 1 ||
+		got[0].Type != enum.ResContentTypeText || got[0].Text != "hi" {
+		t.Errorf("items[0].Contents = %+v", got)
+	}
+
+	// item 1: assistant 三个块按原顺序保留
+	if items[1].Role != enum.RoleAssistant {
+		t.Errorf("items[1].Role = %q, want %q", items[1].Role, enum.RoleAssistant)
+	}
+	if got := items[1].Contents; len(got) != 3 ||
+		got[0].Type != enum.ResContentTypeThinking || got[0].Thinking != "思考中..." ||
+		got[1].Type != enum.ResContentTypeText || got[1].Text != "让我查一下" ||
+		got[2].Type != enum.ResContentTypeToolUse || got[2].Name != "shell" || string(got[2].Input) != `{"cmd":"ls"}` {
+		t.Errorf("items[1].Contents = %+v", got)
+	}
+
+	// item 2: user tool_result 块数组
+	if items[2].Role != enum.RoleUser {
+		t.Errorf("items[2].Role = %q, want %q", items[2].Role, enum.RoleUser)
+	}
+	if got := items[2].Contents; len(got) != 1 ||
+		got[0].Type != enum.ResContentTypeToolResult || got[0].Result != "file.txt\nfile2.txt" {
+		t.Errorf("items[2].Contents = %+v", got)
+	}
+
+	// item 3: system 文本包装
+	if items[3].Role != enum.RoleSystem {
+		t.Errorf("items[3].Role = %q, want %q", items[3].Role, enum.RoleSystem)
+	}
+	if got := items[3].Contents; len(got) != 1 ||
+		got[0].Type != enum.ResContentTypeText || got[0].Text != "you are helpful" {
+		t.Errorf("items[3].Contents = %+v", got)
+	}
+}
+
+// TestToSessionItems_NilElement 回归保护：msgs 里出现 nil 元素（磁盘数据
+// 损坏或 null 反序列化）时，ToSessionItems 必须跳过而不是 nil 解引用崩溃。
+func TestToSessionItems_NilElement(t *testing.T) {
+	msgs := []*Message{
+		nil,
+		{Role: enum.RoleUser, Content: TextContent{Text: "hi"}},
+		nil,
+	}
+	items := ToSessionItems(msgs)
+	if len(items) != 1 {
+		t.Fatalf("期望跳过 nil 后剩 1 条，得到 %d", len(items))
+	}
+	if items[0].Role != enum.RoleUser {
+		t.Errorf("items[0].Role = %q, want %q", items[0].Role, enum.RoleUser)
 	}
 }

@@ -8,7 +8,7 @@ import (
 type UnitTool struct {
 	Schema  *XllmTool
 	Param   any
-	Process func(any) (any, error)
+	Process func(c *Client, a any) (any, error)
 }
 
 // shellRunTimeout 终端命令执行超时；到期后子进程会被强制 kill
@@ -25,7 +25,7 @@ var BuiltIns = map[string]*UnitTool{
 			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 		},
 		Param: &struct{}{},
-		Process: func(a any) (any, error) {
+		Process: func(c *Client, a any) (any, error) {
 			return time.Now().Format(time.DateTime), nil
 		},
 	},

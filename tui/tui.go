@@ -1,21 +1,21 @@
-// Package tui 实现基于 bubbletea 的终端 UI：交互历史记录、输入框、状态展示。
-//
-// 入口为 Run：创建 repl.Client、把 inp.AskYesNo 替换为 TUI 弹窗实现、启动 forwardEvents
-// drain 通道、启动 REPL goroutine。所有对话推进由 REPL 自主完成；TUI 只负责：
-//   - 按键 → 包装成 repl.Cmd 投递
-//   - repl.Event  → 渲染或更新状态
+// Package tui 是基于 bubbletea 的终端 UI：渲染 REPL 事件、把按键转 Cmd。
+// 工具授权由 Client.AskYesNo 通过 *repl.EvtUserAuthq 投到 TUI 后用 y/n 回复。
 package tui
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
+	"slyagent/enum"
 	"slyagent/repl"
 )
 
@@ -25,7 +25,6 @@ func Run(ctx context.Context, cfg *repl.Config) error {
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m.program = p
 
-	installTUIAuth(p)
 	m.client.Start()
 	go m.forwardEvents()
 
@@ -33,16 +32,9 @@ func Run(ctx context.Context, cfg *repl.Config) error {
 		<-ctx.Done()
 		p.Quit()
 	}()
-
 	_, err := p.Run()
 	m.client.Stop()
 	return err
-}
-
-// authRequest 暂存一次授权请求，等待用户按 y/n。
-type authRequest struct {
-	prompt  string
-	replyCh chan bool
 }
 
 type model struct {
@@ -62,9 +54,14 @@ type model struct {
 	textInput textinput.Model
 
 	busy    bool
-	authReq *authRequest
+	authReq *repl.EvtUserAuthq
 
+	// mouse 表示鼠标上报是否开启：开启时滚轮可用但终端拖选复制被禁用。
+	mouse  bool
 	status string
+
+	// sessID 当前会话 id：初始化时来自 cfg.SessID，会话切换时由 SessionLoad 事件更新。
+	sessID string
 }
 
 func newModel(cfg *repl.Config) *model {
@@ -84,12 +81,23 @@ func newModel(cfg *repl.Config) *model {
 		items:     []historyItem{},
 		textInput: ti,
 		viewport:  vp,
+		mouse:     true,
 		status:    "就绪",
+		sessID:    cfg.SessID,
 	}
 }
 
 func (m *model) Init() tea.Cmd {
-	return textinput.Blink
+	cmds := []tea.Cmd{textinput.Blink}
+	// 启动时按 cfg.SessID 加载会话，通过 cmd channel 与 /session load 走同一条路径
+	if m.cfg.SessID != "" {
+		sid := m.cfg.SessID
+		cmds = append(cmds, func() tea.Msg {
+			m.cmd <- repl.Cmd{Kind: repl.CmdSession, Msg: "load " + sid}
+			return nil
+		})
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -104,8 +112,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	// 鼠标事件：滚轮上下直接驱动 viewport，不依赖 focus 状态。
-	// 终端终端环境鼠标 hover 仍会触发，但只有 wheel 才走 ScrollUp/ScrollDown。
+	// 鼠标滚轮直接驱动 viewport，不依赖 focus 状态
 	case tea.MouseMsg:
 		switch msg.Type {
 		case tea.MouseWheelUp:
@@ -117,13 +124,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	// REPL 事件：所有事件统一为 *repl.EvtRepl，按 Kind 分发并用 EncodeEvent[T] 解出 payload。
+	// REPL 事件：按 Kind 分发并用 EncodeEvent[T] 解出 payload
 	case *repl.EvtRepl:
 		return m.handleEvt(msg)
 
-	// 授权请求
-	case authRequestMsg:
-		m.authReq = &authRequest{prompt: msg.prompt, replyCh: msg.replyCh}
+	// 授权请求：Client 投到 c.out 的 *repl.EvtUserAuthq；y → true，n/esc → false
+	case *repl.EvtUserAuthq:
+		m.authReq = msg
 		m.textInput.Blur()
 		m.status = "等待授权"
 		m.refreshViewport()
@@ -247,14 +254,6 @@ func (m *model) handleEvt(env *repl.EvtRepl) (tea.Model, tea.Cmd) {
 	case repl.Quit:
 		return m, tea.Quit
 
-	case repl.SessionNew:
-		p, err := repl.EncodeEvent[repl.EvtPayloadData](env)
-		if err != nil || p == nil {
-			return m, nil
-		}
-		m.items = append(m.items, historyItem{kind: itemSystem, text: p.Data})
-		m.refreshViewport()
-
 	case repl.SessionList:
 		p, err := repl.EncodeEvent[repl.EvtPayloadSessionList](env)
 		if err != nil || p == nil {
@@ -270,11 +269,11 @@ func (m *model) handleEvt(env *repl.EvtRepl) (tea.Model, tea.Cmd) {
 		}
 		m.items = make([]historyItem, 0, len(p.Items))
 		if p.ID != "" {
-			// 前置一条系统消息表明加载来源
+			m.sessID = p.ID
 			m.items = append(m.items, historyItem{kind: itemSystem, text: "[已加载: " + p.ID + "]"})
 		}
 		for _, it := range p.Items {
-			m.items = append(m.items, sessionItemToHistoryItem(it))
+			m.items = append(m.items, sessionItemToHistoryItems(it)...)
 		}
 		m.refreshViewport()
 	}
@@ -282,25 +281,33 @@ func (m *model) handleEvt(env *repl.EvtRepl) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// sessionItemToHistoryItem 把 wire SessionItem 映射为内部 historyItem。
-// SessionItem 是 repl 在 emit 时按 Message 拆好的渲染单元；这里只做 wire →
-// 内部 itemKind 的字面量转换，不再二次解析 role / content blocks。
-func sessionItemToHistoryItem(it *repl.SessionItem) historyItem {
-	switch it.Kind {
-	case repl.SessionItemUser:
-		return historyItem{kind: itemUser, text: it.Text}
-	case repl.SessionItemAssistant:
-		return historyItem{kind: itemAssistant, text: it.Text}
-	case repl.SessionItemThinking:
-		return historyItem{kind: itemThinking, text: it.Text}
-	case repl.SessionItemToolCall:
-		return historyItem{kind: itemToolCall, toolName: it.Name, toolInput: it.Input}
-	case repl.SessionItemToolResult:
-		return historyItem{kind: itemToolResult, toolResult: it.Result, toolErr: it.Err}
-	case repl.SessionItemSystem:
-		return historyItem{kind: itemSystem, text: it.Text}
+// sessionItemToHistoryItems 把 SessionItem 拆成 TUI 的 historyItem 列表：
+// 每条 Contents 按 Type 渲染，text 块的 UI kind 由 Role 决定。
+func sessionItemToHistoryItems(it *repl.SessionItem) []historyItem {
+	if it == nil {
+		return nil
 	}
-	return historyItem{}
+	var items []historyItem
+	for _, c := range it.Contents {
+		switch c.Type {
+		case enum.ResContentTypeText:
+			kind := itemAssistant
+			switch it.Role {
+			case enum.RoleUser:
+				kind = itemUser
+			case enum.RoleSystem, enum.RoleAgent:
+				kind = itemSystem
+			}
+			items = append(items, historyItem{kind: kind, text: c.Text})
+		case enum.ResContentTypeThinking:
+			items = append(items, historyItem{kind: itemThinking, text: c.Thinking})
+		case enum.ResContentTypeToolUse:
+			items = append(items, historyItem{kind: itemToolCall, toolName: c.Name, toolInput: string(c.Input)})
+		case enum.ResContentTypeToolResult:
+			items = append(items, historyItem{kind: itemToolResult, toolResult: c.Result})
+		}
+	}
+	return items
 }
 
 func (m *model) handleResize() {
@@ -325,7 +332,7 @@ func (m *model) handleResize() {
 
 func (m *model) refreshViewport() {
 	m.atBottom = m.viewport.AtBottom()
-	m.viewport.SetContent(renderItems(m.items))
+	m.viewport.SetContent(renderItems(m.items, m.width))
 	if m.busy || m.atBottom {
 		m.viewport.GotoBottom()
 	}
@@ -336,13 +343,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.authReq != nil {
 		switch msg.String() {
 		case "y", "Y":
-			m.authReq.replyCh <- true
+			m.authReq.Reply <- true
 			m.authReq = nil
-			// 不 Focus：REPL 还在 busy 状态，由 EvBusy{false} 触发 Focus
 			m.status = "运行中..."
 			m.refreshViewport()
 		case "n", "N", "esc":
-			m.authReq.replyCh <- false
+			m.authReq.Reply <- false
 			m.authReq = nil
 			m.status = "已取消"
 			m.refreshViewport()
@@ -354,6 +360,13 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
+	case "ctrl+y":
+		// 复制最后一条助手回复，忙碌时也可用
+		return m.copyLastAssistant()
+	case "alt+m":
+		// 切换鼠标上报：关闭后原生拖选复制恢复，但滚轮失效
+		m.toggleMouse()
+		return m, nil
 	case "esc":
 		if m.busy {
 			return m, nil
@@ -361,8 +374,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.textInput.SetValue("")
 		return m, nil
 	case "up":
-		// 单行 textinput 对 up/down 无副作用；这里直接拿来滚 viewport，
-		// 让"非忙时"也能向上翻看历史。
+		// 非忙时 up/down 滚 viewport
 		m.viewport.ScrollUp(1)
 		return m, nil
 	case "down":
@@ -423,14 +435,14 @@ func (m *model) View() string {
 	if !m.ready {
 		return "初始化中..."
 	}
-	top := topBarStyle.Render(fmt.Sprintf(" slyagent  %s", m.cfg.ModelName))
+	top := topBarStyle.Render(fmt.Sprintf(" slyagent [%s] %s", m.sessID, m.cfg.ModelName))
 	sep := systemStyle.Render(strings.Repeat("─", m.width))
 
 	input := inputPromptStyle.Render("> ") + m.textInput.View()
 	status := m.renderStatus()
 
 	if m.authReq != nil {
-		prompt := m.authReq.prompt
+		prompt := m.authReq.Prompt
 		if prompt == "" {
 			prompt = "确认执行？"
 		}
@@ -459,5 +471,49 @@ func (m *model) renderStatus() string {
 		fmt.Sprintf("%s %s", icon, m.status),
 		fmt.Sprintf("历史: %d", len(m.items)),
 	}
+	// 状态栏够宽时附上快捷键提示；窄屏不挤。
+	if m.width >= 64 {
+		mouseLabel := "开"
+		if !m.mouse {
+			mouseLabel = "关"
+		}
+		parts = append(parts, "Ctrl+Y 复制", "Alt+M 鼠标:"+mouseLabel)
+	}
 	return statusBarStyle.Render(strings.Join(parts, "  │  "))
+}
+
+// copyLastAssistant 把最后一条助手回复写入剪贴板：先尝试系统剪贴板，
+// 再追加 OSC 52 写入终端剪贴板。失败时把原因写到状态栏。
+func (m *model) copyLastAssistant() (tea.Model, tea.Cmd) {
+	text := lastAssistantText(m.items)
+	if text == "" {
+		m.status = "没有可复制的助手回复"
+		return m, nil
+	}
+	if err := clipboard.WriteAll(text); err != nil {
+		m.status = "复制失败: " + err.Error()
+	} else {
+		m.status = "已复制最后一条助手回复（" + fmt.Sprintf("%d", ansi.StringWidth(text)) + " 列）"
+	}
+	return m, osc52Copy(text)
+}
+
+// osc52Copy 返回一个 tea.Cmd，把 text 通过 OSC 52 写入终端剪贴板。
+func osc52Copy(text string) tea.Cmd {
+	enc := base64.StdEncoding.EncodeToString([]byte(text))
+	return tea.Printf("\x1b]52;c;%s\x07", enc)
+}
+
+// toggleMouse 切换鼠标上报。关掉时滚轮不再触发 app，终端原生选区
+// 复制恢复；开回后滚轮可用但拖选会被 app 捕获。
+func (m *model) toggleMouse() {
+	if m.mouse {
+		m.program.DisableMouseCellMotion()
+		m.mouse = false
+		m.status = "鼠标已关闭：可拖选复制（↑↓ 翻页），Alt+M 重启"
+	} else {
+		m.program.EnableMouseCellMotion()
+		m.mouse = true
+		m.status = "鼠标已开启：滚轮可用，Alt+M 关闭后拖选复制"
+	}
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"slyagent/enum"
 )
 
 // TestMessage_RoundTrip 验证 Message 在 TextContent / BlocksContent 两种
@@ -22,7 +24,7 @@ func TestMessage_RoundTrip(t *testing.T) {
 		{
 			name: "system_text",
 			in: &Message{
-				Role:    RoleSystem,
+				Role:    enum.RoleSystem,
 				Content: TextContent{Text: "you are a helper"},
 			},
 			wantText: `"you are a helper"`,
@@ -39,7 +41,7 @@ func TestMessage_RoundTrip(t *testing.T) {
 		{
 			name: "user_text",
 			in: &Message{
-				Role:    RoleUser,
+				Role:    enum.RoleUser,
 				Content: TextContent{Text: "hi"},
 			},
 			wantText: `"hi"`,
@@ -56,8 +58,8 @@ func TestMessage_RoundTrip(t *testing.T) {
 		{
 			name: "user_toolresult_blocks",
 			in: &Message{
-				Role:    RoleUser,
-				Content: BlocksContent{Blocks: []*ResContent{{Type: ResContentTypeToolResult, ToolUseID: "t1", Result: "out"}}},
+				Role:    enum.RoleUser,
+				Content: BlocksContent{Blocks: []*ResContent{{Type: enum.ResContentTypeToolResult, ToolUseID: "t1", Result: "out"}}},
 			},
 			wantArray: `"type":"tool_result"`,
 			verifyBack: func(t *testing.T, m *Message) {
@@ -73,8 +75,8 @@ func TestMessage_RoundTrip(t *testing.T) {
 		{
 			name: "assistant_blocks",
 			in: &Message{
-				Role:    RoleAssistant,
-				Content: BlocksContent{Blocks: []*ResContent{{Type: ResContentTypeText, Text: "hi"}, {Type: ResContentTypeToolUse, ID: "u1", Name: "shell"}}},
+				Role:    enum.RoleAssistant,
+				Content: BlocksContent{Blocks: []*ResContent{{Type: enum.ResContentTypeText, Text: "hi"}, {Type: enum.ResContentTypeToolUse, ID: "u1", Name: "shell"}}},
 			},
 			wantArray: `"type":"text"`,
 			verifyBack: func(t *testing.T, m *Message) {

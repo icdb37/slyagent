@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"slyagent/enum"
 )
 
 func TestReplClient(t *testing.T) {
@@ -35,12 +37,12 @@ func mkMsg(action MessageAction, body string) *Message {
 	}
 }
 
-func roleOf(a MessageAction) Role {
+func roleOf(a MessageAction) enum.Role {
 	switch a {
 	case MessageActionUser, MessageActionToolResult:
-		return RoleUser
+		return enum.RoleUser
 	default:
-		return RoleAssistant
+		return enum.RoleAssistant
 	}
 }
 

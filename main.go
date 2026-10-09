@@ -22,10 +22,11 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Kill, os.Interrupt)
 	defer cancel()
 
-	// 命令行模式：-cli
-	if len(os.Args) > 1 && os.Args[1] == "-cli" {
-		runCLI(ctx, cfg)
-		return
+	if len(os.Args) > 1 {
+		cfg.SessID = strings.TrimSpace(os.Args[1])
+	}
+	if cfg.SessID == "" {
+		cfg.SessID = "default"
 	}
 	if err := tui.Run(ctx, cfg); err != nil {
 		os.Stderr.WriteString("tui error: " + err.Error() + "\n")
@@ -33,12 +34,11 @@ func main() {
 	}
 }
 
-// runCLI 事件→stdout 模式：把 REPL 事件格式化为终端文本，stdin EOF 退出。
+// runCLI 是 REPL 的非交互前端：把事件写到 stdout、读 stdin 转 Cmd。
 func runCLI(ctx context.Context, cfg *repl.Config) {
 	c, cmdCh := repl.New(cfg)
 	c.Start()
 
-	// stdin → cmd
 	go func() {
 		r := bufio.NewReader(os.Stdin)
 		for {
@@ -55,10 +55,18 @@ func runCLI(ctx context.Context, cfg *repl.Config) {
 		}
 	}()
 
-	// Events → stdout
 	go func() {
+		r := bufio.NewReader(os.Stdin)
 		for ev := range c.Events() {
-			printEvent(ev)
+			switch v := ev.(type) {
+			case *repl.EvtUserAuthq:
+				fmt.Fprintf(os.Stdout, "%s[y/N]: ", v.Prompt)
+				line, _, _ := r.ReadLine()
+				ans := strings.ToLower(strings.TrimSpace(string(line)))
+				v.Reply <- (ans == "y" || ans == "yes")
+			default:
+				printEvent(ev)
+			}
 		}
 	}()
 
@@ -66,7 +74,7 @@ func runCLI(ctx context.Context, cfg *repl.Config) {
 	c.Stop()
 }
 
-// cliCmd 把 CLI 输入翻译为 Cmd。
+// cliCmd 把 CLI 文本翻译为 Cmd。
 func cliCmd(text string) repl.Cmd {
 	low := strings.ToLower(text)
 	switch low {
@@ -94,9 +102,9 @@ func printEvent(ev any) {
 		}
 		fmt.Fprintf(os.Stdout, "> %s\n", p.Data)
 	case repl.Busy:
-		// 不打印 busy 状态；状态通过流式文本本身表达
+		// busy 状态由流式文本本身表达，不单独打印
 	case repl.AssistantStart:
-		// 流式前打空行；chunk 会跟上
+		// 标记流式开始；chunk 由 AssistantChunk 累积
 	case repl.AssistantChunk:
 		p, err := repl.EncodeEvent[repl.EvtPayloadAssistantChunk](env)
 		if err != nil || p == nil {
@@ -153,7 +161,7 @@ func printEvent(ev any) {
 			return
 		}
 		fmt.Fprintf(os.Stdout, "%s\n", p.Data)
-	case repl.SessionNew, repl.SessionLoad:
+	case repl.SessionLoad:
 		p, err := repl.EncodeEvent[repl.EvtPayloadData](env)
 		if err != nil || p == nil {
 			return
@@ -168,6 +176,6 @@ func printEvent(ev any) {
 	case repl.Clear:
 		fmt.Fprintln(os.Stdout, "\033[2J\033[H") // 清屏
 	case repl.Quit:
-		// 不必处理；run() 收到 quit 后会关闭 c.out，自然退出
+		// 收到 quit 后 c.out 会被关闭，循环自然退出
 	}
 }

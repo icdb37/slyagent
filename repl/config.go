@@ -6,6 +6,7 @@ type Config struct {
 	ModelName   string
 	MaxTokens   int
 	Temperature float64
+	SessID      string
 }
 
 const (

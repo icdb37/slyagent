@@ -2,25 +2,17 @@ package repl
 
 import (
 	"encoding/json"
-	"strings"
+
+	"slyagent/enum"
 )
 
-// Cmd 与 EvtRepl 是 REPL 与外部（TUI/CLI/HTTP 前端）之间的契约。
-//
-// Cmd 由调用方通过 chan Cmd 投递，Client 消费后按状态机推进。
+// Cmd 由调用方通过 chan Cmd 投递，Client 消费后推进对话。
 //
 // EvtRepl 是统一的输出 envelope：所有"事件"都是某种 T 通过 DecodeEvtRepl
 // 包装成的 *EvtRepl；接收方按 Kind 分发，用 EncodeEvent[T] 解出原值。
-// 把"事件类型"从域类型下沉为调用方自决，避免 sum-type 接口的耦合。
 //
-// 示例：
-//
-//	env := DecodeEvtRepl(&EvtPayloadData{Data: "hi"}, UserEcho)
-//	p, _ := EncodeEvent[EvtPayloadData](env)
-//
-// wire 字节流（Payload 是 JSON 字符串，内层再次转义）：
-//
-//	{"kind":"ASSISTANT_CHUNK","payload":"{\"Delta\":\"hello\"}"}
+// 事件类型由调用方自决（Kind 是协议标签，Payload 是载荷 schema），避免
+// sum-type 接口的耦合。
 
 // ---------- 命令（调用方 → REPL）----------
 
@@ -58,18 +50,13 @@ const (
 	Clear          EvtKind = "CLEAR"
 	Quit           EvtKind = "QUIT"
 	SessionList    EvtKind = "SESSION_LIST"
-	SessionNew     EvtKind = "SESSION_NEW"
 	SessionLoad    EvtKind = "SESSION_LOAD"
 )
 
 // ---------- Payload 类型 ----------
 //
-// 每个 Kind 对应一个具体 payload 类型，由调用方在 DecodeEvtRepl / EncodeEvent 处
-// 显式标注。Kind 是协议标签，Payload 是载荷 schema；二者一一对应。
-//
-// 多个 Kind 可共用同一 Payload 类型（结构相同时），由 Kind 区分语义：
-//   - EvtPayloadData{Data}：UserEcho / Compress / Status / Error / System / SessionNew / SessionLoad / AssistantStart / Clear / Quit / AssistantEnd
-//   - EvtPayloadBusy / EvtPayloadAssistantChunk / EvtPayloadToolCall / EvtPayloadToolResult / EvtPayloadSessionList / EvtPayloadSessionLoad：各自专属
+// Kind → Payload 一一对应；多个 Kind 可共用同一 Payload 类型，由 Kind 区分语义。
+// EvtPayloadData 是通用 string payload；其余类型各对应专属 Kind。
 
 type EvtPayloadData struct {
 	Data string `json:"data,omitempty"`
@@ -93,82 +80,30 @@ type EvtPayloadSessionList struct {
 	IDs []string `json:"ids,omitempty"`
 }
 
-// SessionItemKind 是 SessionItem 的 wire 分类标签。
-// 用 string 而非内部 enum，让 wire 与 UI 内部 itemKind 解耦；
-// UI 端按 Kind 字面量映射到自己的渲染项。
-type SessionItemKind string
-
-const (
-	SessionItemUser       SessionItemKind = "user"
-	SessionItemAssistant  SessionItemKind = "assistant"
-	SessionItemThinking   SessionItemKind = "thinking"
-	SessionItemToolCall   SessionItemKind = "tool_call"
-	SessionItemToolResult SessionItemKind = "tool_result"
-	SessionItemSystem     SessionItemKind = "system"
-)
-
-// SessionItem 是 session 回放中的最小渲染单元。
-// 一条 Message 会被拆成多条 Item（assistant 含 text + thinking + tool_use 时
-// 各成一条）；TUI 端按 Kind 直接渲染，无需再做 role-based 解析。
+// SessionItem 是 session 回放的最小渲染单元：一条 Message 映射到一个
+// SessionItem，由 TUI 按 Role + Contents 自行渲染。
 type SessionItem struct {
-	Kind   SessionItemKind `json:"kind"`
-	Text   string          `json:"text,omitempty"`   // user / assistant / thinking / system 的内容
-	Name   string          `json:"name,omitempty"`   // tool_call 工具名
-	Input  string          `json:"input,omitempty"`  // tool_call 参数（已格式化）
-	Result string          `json:"result,omitempty"` // tool_result 输出
-	Err    string          `json:"error,omitempty"`  // tool_result 错误
+	Role     enum.Role     `json:"role"`
+	Contents []*ResContent `json:"contents"`
 }
 
-// ToSessionItems 把 history []*Message 转换为 UI 回放用的 []SessionItem。
-// 转换规则：
-//   - RoleSystem / RoleAgent → 一条 SessionItem{Kind: SessionItemSystem, Text}
-//   - RoleUser, TextContent   → 一条 SessionItem{Kind: SessionItemUser}
-//   - RoleUser, BlocksContent（tool_result bundle）→ 每个 tool_result 块一条
-//   - RoleAssistant, BlocksContent → 按块类型拆：text / thinking / tool_use 各成一条
+// ToSessionItems 把 history []*Message 转换为 UI 回放用的 []SessionItem：
+// TextContent 包装为单 text 块，BlocksContent 直接复用其 Blocks。
+// msgs 里若有 nil 元素（磁盘数据损坏或极端竞态），跳过以避免 nil 解引用崩溃。
 func ToSessionItems(msgs []*Message) []*SessionItem {
-	var items []*SessionItem
+	items := make([]*SessionItem, 0, len(msgs))
 	for _, m := range msgs {
-		switch m.Role {
-		case RoleSystem, RoleAgent:
-			items = append(items, &SessionItem{
-				Kind: SessionItemSystem,
-				Text: strings.Join(m.Content.GetTexts(), "\n"),
-			})
-		case RoleUser:
-			switch mc := m.Content.(type) {
-			case TextContent:
-				items = append(items, &SessionItem{Kind: SessionItemUser, Text: mc.Text})
-			case BlocksContent:
-				for _, b := range mc.Blocks {
-					if b.Type != ResContentTypeToolResult {
-						continue
-					}
-					items = append(items, &SessionItem{
-						Kind:   SessionItemToolResult,
-						Result: b.Result,
-					})
-				}
-			}
-		case RoleAssistant:
-			bc, ok := m.Content.(BlocksContent)
-			if !ok {
-				continue
-			}
-			for _, b := range bc.Blocks {
-				switch b.Type {
-				case ResContentTypeText:
-					items = append(items, &SessionItem{Kind: SessionItemAssistant, Text: b.Text})
-				case ResContentTypeThinking:
-					items = append(items, &SessionItem{Kind: SessionItemThinking, Text: b.Thinking})
-				case ResContentTypeToolUse:
-					items = append(items, &SessionItem{
-						Kind:  SessionItemToolCall,
-						Name:  b.Name,
-						Input: string(b.Input),
-					})
-				}
-			}
+		if m == nil {
+			continue
 		}
+		item := &SessionItem{Role: m.Role}
+		switch mc := m.Content.(type) {
+		case TextContent:
+			item.Contents = []*ResContent{{Type: enum.ResContentTypeText, Text: mc.Text}}
+		case BlocksContent:
+			item.Contents = mc.Blocks
+		}
+		items = append(items, item)
 	}
 	return items
 }
@@ -192,8 +127,7 @@ func EncodeEvent[T any](e *EvtRepl) (*T, error) {
 }
 
 // DecodeEvtRepl 把任意类型 param 序列化为 JSON 字符串，包成 EvtRepl。
-// json.Marshal 失败时 Payload 留空（罕见：T 含有不可序列化字段）。
-// 入参取 *T：避免结构体拷贝、保证调用方传地址语义统一（与 EncodeEvent 出 *T 对称）。
+// 入参取 *T 与 EncodeEvent 出 *T 对称，避免结构体拷贝。
 func DecodeEvtRepl[T any](param *T, kind EvtKind) *EvtRepl {
 	e := &EvtRepl{Kind: kind}
 	data, _ := json.Marshal(param)
@@ -202,11 +136,16 @@ func DecodeEvtRepl[T any](param *T, kind EvtKind) *EvtRepl {
 }
 
 // errString 把 error 折叠为 string：nil → ""，否则 err.Error()。
-// 当某 Kind 改用 EvtPayloadData{Data} 表达"可空错误"时（如 AssistantEnd），
-// emit 端用本函数做转换；接收端以 Data == "" 区分成功 / 失败。
+// 用于把可空错误装进 EvtPayloadData{Data}。
 func errString(err error) string {
 	if err == nil {
 		return ""
 	}
 	return err.Error()
+}
+
+// EvtUserAuthq 是工具授权请求：Prompt 描述动作，Reply 是单次回复通道。
+type EvtUserAuthq struct {
+	Prompt string
+	Reply  chan bool
 }

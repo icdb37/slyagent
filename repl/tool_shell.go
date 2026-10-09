@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"slyagent/inp"
 	"strings"
 	"sync"
 )
@@ -53,13 +51,12 @@ func init() {
 			}`),
 		},
 		Param: &ToolShellParam{},
-		Process: func(a any) (any, error) {
+		Process: func(c *Client, a any) (any, error) {
 			tp, ok := a.(*ToolShellParam)
 			if !ok {
 				return nil, fmt.Errorf("ruh_shell param type invalid，请检查代码之后重新运行")
 			}
-			os.Stdout.WriteString("请求执行命令: " + tp.Format() + "; [y/N]: ")
-			if !inp.AskYesNo("") {
+			if !c.AskYesNo("请求执行命令: " + tp.Format()) {
 				return nil, fmt.Errorf("用户取消运行命令")
 			}
 			return run_cmd(tp.Cmd, tp.Arg...)

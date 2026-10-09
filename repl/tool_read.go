@@ -40,7 +40,7 @@ func init() {
 			}`),
 		},
 		Param: &ToolLsParam{},
-		Process: func(a any) (any, error) {
+		Process: func(c *Client, a any) (any, error) {
 			tp, ok := a.(*ToolLsParam)
 			if !ok {
 				return nil, fmt.Errorf("ls param type invalid，请检查代码之后重新运行")
@@ -63,7 +63,7 @@ func init() {
 			}`),
 		},
 		Param: &ToolReadParam{},
-		Process: func(a any) (any, error) {
+		Process: func(c *Client, a any) (any, error) {
 			tp, ok := a.(*ToolReadParam)
 			if !ok {
 				return nil, fmt.Errorf("read param type invalid，请检查代码之后重新运行")
@@ -103,7 +103,7 @@ func init() {
 			}`),
 		},
 		Param: &ToolFindParam{},
-		Process: func(a any) (any, error) {
+		Process: func(c *Client, a any) (any, error) {
 			tp, ok := a.(*ToolFindParam)
 			if !ok {
 				return nil, fmt.Errorf("find param type invalid，请检查代码之后重新运行")
@@ -129,7 +129,7 @@ func init() {
 			}`),
 		},
 		Param: &ToolGrepParam{},
-		Process: func(a any) (any, error) {
+		Process: func(c *Client, a any) (any, error) {
 			tp, ok := a.(*ToolGrepParam)
 			if !ok {
 				return nil, fmt.Errorf("grep param type invalid，请检查代码之后重新运行")

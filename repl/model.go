@@ -5,38 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"unicode"
-)
 
-type Role string
-
-const (
-	RoleSystem    Role = "system"
-	RoleUser      Role = "user"
-	RoleAssistant Role = "assistant"
-	RoleAgent     Role = "agent"
-)
-
-type ResContentType string
-
-const (
-	ResContentTypeText       ResContentType = "text"
-	ResContentTypeThinking   ResContentType = "thinking"
-	ResContentTypeToolUse    ResContentType = "tool_use"
-	ResContentTypeToolResult ResContentType = "tool_result"
-)
-
-type ResContentDeltaType string
-
-const (
-	ResContentDeltaTypeText      ResContentDeltaType = "text_delta"
-	ResContentDeltaTypeSignature ResContentDeltaType = "signature_delta"
-	ResContentDeltaTypeThinking  ResContentDeltaType = "thinking_delta"
-	ResContentDeltaTypeInputJson ResContentDeltaType = "input_json_delta"
+	"slyagent/enum"
 )
 
 type ReqContent string
 type ResContent struct {
-	Type ResContentType `json:"type"`
+	Type enum.ResContentType `json:"type"`
 
 	// text 块
 	Text string `json:"text,omitempty"`
@@ -109,10 +84,10 @@ func (b BlocksContent) GetTexts() []string {
 func (b BlocksContent) MarshalJSON() ([]byte, error) { return json.Marshal(b.Blocks) }
 
 type Message struct {
-	Role    Role           `json:"role"`
-	Content MessageContent `json:"content"`
-	size    int            // 消息大小
-	action  MessageAction  // 操作
+	Role    enum.Role         `json:"role"`
+	Content MessageContent    `json:"content"`
+	size    int                // 消息大小
+	action  MessageAction      // 操作
 }
 
 // UnmarshalJSON 从 wire 形态恢复 Message：以 role 为主判别决定 Content 形态。
@@ -126,27 +101,27 @@ type Message struct {
 // 是确定的；只有 user 兼容两种 wire 形态。
 func (m *Message) UnmarshalJSON(data []byte) error {
 	var probe struct {
-		Role    Role            `json:"role"`
-		Content json.RawMessage `json:"content"`
+		Role    enum.Role          `json:"role"`
+		Content json.RawMessage   `json:"content"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return err
 	}
 	m.Role = probe.Role
 	switch probe.Role {
-	case RoleSystem, RoleAgent:
+	case enum.RoleSystem, enum.RoleAgent:
 		var t TextContent
 		if err := json.Unmarshal(probe.Content, &t.Text); err != nil {
 			return err
 		}
 		m.Content = t
-	case RoleAssistant:
+	case enum.RoleAssistant:
 		var b BlocksContent
 		if err := json.Unmarshal(probe.Content, &b.Blocks); err != nil {
 			return err
 		}
 		m.Content = b
-	case RoleUser:
+	case enum.RoleUser:
 		// user 二义：文本（首字节 "）或块数组（首字节 [）
 		head := bytes.TrimLeftFunc(probe.Content, unicode.IsSpace)
 		if len(head) > 0 && head[0] == '"' {
@@ -201,8 +176,8 @@ type ReqXllm struct {
 type ResXllm struct {
 	ID      string        `json:"id"`
 	Type    string        `json:"type"`
-	Role    Role          `json:"role"`
-	Model   string        `json:"model"`
+	Role    enum.Role      `json:"role"`
+	Model   string         `json:"model"`
 	Content []*ResContent `json:"content"`
 	Usage   struct {
 		InputTokens              int `json:"input_tokens"`
@@ -228,7 +203,7 @@ type ResContentBlock struct {
 	Type         ResEventType `json:"type,omitempty"`
 	Index        int          `json:"index"`
 	ContentBlock struct {
-		Type ResContentType `json:"type,omitempty"`
+		Type enum.ResContentType `json:"type,omitempty"`
 		ID   string         `json:"id,omitempty"`
 		Name string         `json:"name,omitempty"`
 	} `json:"content_block"`
@@ -238,7 +213,7 @@ type ResContentDelta struct {
 	Type  ResEventType `json:"type,omitempty"`
 	Index int          `json:"index"`
 	Delta struct {
-		Type        ResContentDeltaType `json:"type,omitempty"`
+		Type        enum.ResContentDeltaType `json:"type,omitempty"`
 		Thinking    string              `json:"thinking,omitempty"`
 		Text        string              `json:"text,omitempty"`
 		Signature   string              `json:"signature,omitempty"`

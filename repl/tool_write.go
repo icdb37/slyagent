@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slyagent/inp"
 	"strings"
 )
 
@@ -47,7 +46,7 @@ func init() {
 			}`),
 		},
 		Param: &ToolWriteParam{},
-		Process: func(a any) (any, error) {
+		Process: func(c *Client, a any) (any, error) {
 			tp, ok := a.(*ToolWriteParam)
 			if !ok {
 				return nil, fmt.Errorf("write param type invalid，请检查代码之后重新运行")
@@ -57,8 +56,7 @@ func init() {
 				oldInfo = fmt.Sprintf("覆盖已有文件（%d 字节）", info.Size())
 			}
 			prompt := fmt.Sprintf("即将%s：%s（%d 字节）; [y/N]: ", oldInfo, tp.Format(), len(tp.Content))
-			os.Stdout.WriteString(prompt)
-			if !inp.AskYesNo("") {
+			if !c.AskYesNo(prompt) {
 				return nil, fmt.Errorf("用户取消运行命令")
 			}
 			if dir := filepath.Dir(tp.Path); dir != "" {
@@ -99,7 +97,7 @@ func init() {
 			}`),
 		},
 		Param: &ToolPatchParam{},
-		Process: func(a any) (any, error) {
+		Process: func(c *Client, a any) (any, error) {
 			tp, ok := a.(*ToolPatchParam)
 			if !ok {
 				return nil, fmt.Errorf("patch param type invalid，请检查代码之后重新运行")
@@ -128,8 +126,7 @@ func init() {
 			}
 			prompt := fmt.Sprintf("\n即将对 %s 应用 %d 处修改（%d → %d 字节）：\n%s\n确认写入? [y/N]: ",
 				tp.Path, len(tp.Hunks), len(original), len(patched), formatHunks(tp.Hunks))
-			os.Stdout.WriteString(prompt)
-			if !inp.AskYesNo("") {
+			if !c.AskYesNo(prompt) {
 				return nil, fmt.Errorf("用户取消运行命令")
 			}
 			if err := os.WriteFile(tp.Path, []byte(patched), 0644); err != nil {
